@@ -1,0 +1,4 @@
+/* Tailwind (ไม่ใช้ preflight เพื่อไม่ให้ชนกับสไตล์ของ Ant Design) */
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+body { margin: 0; background: #f5f6f2; }
