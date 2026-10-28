@@ -700,32 +700,46 @@ export default function CrudPage({
 
     let input = <Input />;
 
+
     if (field.type === 'inspector') {
-      // admin เลือก/เปลี่ยนผู้ตรวจได้ ผู้ตรวจสร้างงานแล้วผูกกับตัวเองอัตโนมัติ ช่างเลือกได้ตอนสร้างงาน
       const locked =
-        access?.role === 'inspector' || (Boolean(modal?.record) && !access?.is_admin);
+        access?.role === 'inspector' ||
+        (Boolean(modal?.record) && !access?.is_admin);
+
       input = (
         <Select
           showSearch
           allowClear={!locked}
           disabled={locked}
-          placeholder="เลือกผู้ตรวจงาน"
+          placeholder={
+            inspectors.length
+              ? 'เลือกผู้ตรวจงาน'
+              : 'ไม่พบรายชื่อผู้ตรวจงาน'
+          }
           optionFilterProp="label"
-          options={inspectors
-            .filter((item) => committees.some((committee) =>
-              String(committee.full_name || '').trim() === String(item.display_name || item.username || '').trim()
-            ))
-            .map((item) => ({
-              // เก็บ username ไว้เพื่อให้สิทธิ์ตรวจงาน/การมอบหมายเดิมทำงานได้
+          options={inspectors.map((item) => {
+            const username = String(item.username || '').trim();
+            const displayName = String(
+              item.display_name || username
+            ).trim();
+
+            const committee = committees.find(
+              (person) =>
+                String(person.full_name || '').trim() ===
+                displayName
+            );
+
+            return {
+              // ต้องเก็บ username เพื่อให้ระบบตรวจสอบสิทธิ์ได้
               value: item.username,
-              // แสดงเฉพาะชื่อคณะกรรมการ ไม่แสดงตำแหน่งหรือแผนก
-              label: committees.find((committee) =>
-                String(committee.full_name || '').trim() === String(item.display_name || item.username || '').trim()
-              )?.full_name || item.display_name || item.username,
-            }))}
+              label: committee?.full_name || displayName,
+            };
+          })}
+          notFoundContent="ไม่พบรายชื่อผู้ตรวจงาน"
         />
       );
-    } else if (field.type === 'employee' || field.type === 'technician') {
+    }
+    else if (field.type === 'employee' || field.type === 'technician') {
       const isTechnician = field.type === 'technician';
       const options = isTechnician
         ? technicianOptions(modal?.record?.[field.key])

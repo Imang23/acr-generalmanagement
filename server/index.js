@@ -291,17 +291,6 @@ const lineDeps = {
        RETURNING *`,
       [id, photoUrl],
     );
-
-    // แจ้งผู้ตรวจครั้งแรกที่ส่งงาน (ส่งรูปหลายรูปไม่แจ้งซ้ำ)
-    if (exists.approval_status !== 'submitted') {
-      void access.notifyReviewers('repairs', '📥 ช่างส่งงานซ่อม รอตรวจ', [
-        `เลขที่งาน: #${repair.id}`,
-        `รายละเอียด: ${repair.title || '-'}`,
-        `สถานที่: ${repair.location || '-'}`,
-        `ผู้รับผิดชอบ: ${repair.assignee || '-'}`,
-        'เข้าระบบเพื่อตรวจและอนุมัติปิดงาน',
-      ], repair.inspector_username);
-    }
     return repair;
   },
 

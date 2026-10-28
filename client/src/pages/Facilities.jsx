@@ -36,7 +36,7 @@ const repairs = [
   {
     key: 'inspector_username',
     label: 'ผู้ตรวจงาน',
-    type: 'committee',
+    type: 'inspector',
   },
   {
     key: 'due_date',
