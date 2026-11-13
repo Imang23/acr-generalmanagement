@@ -626,3 +626,22 @@ ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS check_note TEXT DEFAULT '';
 ALTER TABLE workers ADD COLUMN IF NOT EXISTS license_no TEXT DEFAULT '';
 ALTER TABLE workers ADD COLUMN IF NOT EXISTS license_expiry DATE;
 ALTER TABLE workers ADD COLUMN IF NOT EXISTS emergency_contact TEXT DEFAULT '';
+-- ร้านกาแฟ: แยกจากโรงอาหาร มีสินค้าฝากขาย
+CREATE TABLE IF NOT EXISTS coffee (
+  id          SERIAL PRIMARY KEY,
+  date        DATE NOT NULL DEFAULT CURRENT_DATE,
+  kind        TEXT NOT NULL DEFAULT 'ขายเอง',   -- ขายเอง | ฝากขาย
+  item        TEXT NOT NULL DEFAULT '',
+  owner       TEXT DEFAULT '',                  -- เจ้าของสินค้าฝากขาย
+  revenue     NUMERIC(12,2) NOT NULL DEFAULT 0, -- ยอดขาย
+  cost        NUMERIC(12,2) NOT NULL DEFAULT 0, -- ต้นทุน / ส่วนที่ต้องจ่ายเจ้าของ
+  note        TEXT DEFAULT '',
+  reporter    TEXT DEFAULT '',
+  verified    BOOLEAN NOT NULL DEFAULT false,
+  verified_by TEXT,
+  verified_at TIMESTAMPTZ,
+  created_at  TIMESTAMPTZ DEFAULT now()
+);
+ALTER TABLE coffee DROP CONSTRAINT IF EXISTS coffee_kind_chk;
+ALTER TABLE coffee ADD CONSTRAINT coffee_kind_chk CHECK (kind IN ('ขายเอง', 'ฝากขาย'));
+CREATE INDEX IF NOT EXISTS coffee_date_idx ON coffee (date DESC);

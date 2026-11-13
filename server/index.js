@@ -1140,6 +1140,8 @@ const resources = {
     'notes',
   ],
   canteen: ['date', 'revenue', 'cost', 'shop', 'note', 'reporter'],
+  // ร้านกาแฟ (แยกจากโรงอาหาร) kind = ขายเอง | ฝากขาย
+  coffee: ['date', 'kind', 'item', 'owner', 'revenue', 'cost', 'note', 'reporter'],
   vehicles: [
     'plate',
     'name',
@@ -1369,6 +1371,7 @@ const order = {
   store_items: 'name',
   repairs: 'id DESC',
   canteen: 'date DESC, id DESC',
+  coffee: 'date DESC, id DESC',
   vehicles: 'id',
   workers: 'id',
   nurse_visits: 'date DESC, id DESC',
@@ -1641,7 +1644,62 @@ app.get('/api/committee-options', auth, async (req, res) => {
     res.status(500).json({ error: 'ไม่สามารถโหลดรายชื่อคณะกรรมการได้' });
   }
 });
+// นำเข้าผลตรวจสุขภาพหลายแถว (ข้ามรายการซ้ำ: วันที่ + ชื่อ + ชั้น เดียวกัน)
+app.post('/api/health_checks/import', auth, async (req, res) => {
+  const input = Array.isArray(req.body?.rows) ? req.body.rows : [];
+  if (!input.length) return res.status(400).json({ error: 'ไม่พบข้อมูลสำหรับนำเข้า' });
+  if (input.length > 1000) return res.status(400).json({ error: 'นำเข้าได้ครั้งละไม่เกิน 1,000 แถว' });
 
+  const num = (v, min, max) => {
+    if (v === null || v === undefined || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) && n >= min && n <= max ? n : undefined; // undefined = ผิดปกติ
+  };
+
+  const rows = [];
+  for (const [i, r] of input.entries()) {
+    const student = String(r?.student || '').trim().slice(0, 200);
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(r?.date || '')) ? r.date : null;
+    const weight = num(r?.weight, 1, 200);
+    const height = num(r?.height, 30, 220);
+    if (!student || !date || weight === undefined || height === undefined) {
+      return res.status(400).json({ error: `ข้อมูลแถวที่ ${i + 1} ไม่ถูกต้อง` });
+    }
+    rows.push({
+      date, student, weight, height,
+      class_room: String(r?.class_room || '').trim().slice(0, 50) || null,
+      note: String(r?.note || '').trim().slice(0, 1000) || null,
+    });
+  }
+
+  const client = await pool.connect();
+  let inserted = 0;
+  try {
+    await client.query('BEGIN');
+    for (const r of rows) {
+      const { rowCount } = await client.query(
+        `INSERT INTO health_checks (date, student, class_room, weight, height, note, reporter)
+         SELECT $1::date, $2::text, $3::text, $4::numeric, $5::numeric, $6::text, $7::text
+         WHERE NOT EXISTS (
+           SELECT 1 FROM health_checks
+           WHERE date = $1::date AND student = $2::text
+             AND COALESCE(class_room, '') = COALESCE($3::text, '')
+         )`,
+        [r.date, r.student, r.class_room, r.weight, r.height, r.note, req.username],
+      );
+      inserted += rowCount;
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  broadcast('health_check', { imported: inserted });
+  res.json({ inserted, skipped: rows.length - inserted });
+});
 for (const [table, cols] of Object.entries(resources)) {
   const pick = (body = {}) =>
     cols
@@ -1783,8 +1841,8 @@ for (const [table, cols] of Object.entries(resources)) {
 
     if (touchUpdatedAt.has(table)) setSql.push('updated_at = now()');
 
-    // แก้ไขรายการโรงอาหาร = ต้องให้ผู้ตรวจตรวจสอบใหม่
-    if (table === 'canteen') {
+    // แก้ไขรายการโรงอาหาร/ร้านกาแฟ = ต้องให้ผู้ตรวจตรวจสอบใหม่
+    if (table === 'canteen' || table === 'coffee') {
       setSql.push('verified = false', 'verified_by = NULL', 'verified_at = NULL');
     }
 

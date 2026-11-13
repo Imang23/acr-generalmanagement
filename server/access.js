@@ -26,6 +26,7 @@ const ROLES = ['admin', 'inspector', 'technician', 'staff'];
 const SEG_MODULE = {
   repairs: 'repairs',
   canteen: 'canteen',
+  coffee: 'canteen',
   vehicles: 'vehicles',
   workers: 'workers',
   nurse_visits: 'nurse',
@@ -50,6 +51,7 @@ const READ_VIA = {
 const DELETE_TABLES = {
   repairs: { module: 'repairs', label: 'title' },
   canteen: { module: 'canteen', label: 'date' },
+  coffee: { module: 'canteen', label: 'item' },
   vehicles: { module: 'vehicles', label: 'plate' },
   workers: { module: 'workers', label: 'name' },
   nurse_visits: { module: 'nurse', label: 'student' },
@@ -376,28 +378,31 @@ export function registerAccess(app, { pool, broadcast, hashPassword, adminUser, 
   });
 
   // ตรวจสอบรายการโรงอาหาร (ผู้ตรวจ/admin) verified=false = ยกเลิกการตรวจสอบ
-  app.post('/api/canteen/:id/verify', needUser, async (req, res) => {
-    if (!can(req.access, 'canteen', 'approve')) {
-      return res.status(403).json({ error: 'เฉพาะผู้ตรวจงานหรือผู้ดูแลระบบเท่านั้นที่ตรวจสอบรายการได้' });
-    }
-    const id = Number(req.params.id);
-    if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ error: 'รหัสรายการไม่ถูกต้อง' });
-    const verified = req.body?.verified !== false;
+    // ตรวจสอบรายการโรงอาหาร/ร้านกาแฟ (ผู้ตรวจ/admin) verified=false = ยกเลิกการตรวจสอบ
+  for (const table of ['canteen', 'coffee']) {
+    app.post(`/api/${table}/:id/verify`, needUser, async (req, res) => {
+      if (!can(req.access, 'canteen', 'approve')) {
+        return res.status(403).json({ error: 'เฉพาะผู้ตรวจงานหรือผู้ดูแลระบบเท่านั้นที่ตรวจสอบรายการได้' });
+      }
+      const id = Number(req.params.id);
+      if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ error: 'รหัสรายการไม่ถูกต้อง' });
+      const verified = req.body?.verified !== false;
 
-    const { rows: [row] } = await pool.query(
-      `UPDATE canteen
-       SET verified = $2,
-           verified_by = CASE WHEN $2 THEN $3 ELSE NULL END,
-           verified_at = CASE WHEN $2 THEN now() ELSE NULL END
-       WHERE id = $1
-       RETURNING *`,
-      [id, verified, req.access.display_name || req.username],
-    );
-    if (!row) return res.status(404).json({ error: 'ไม่พบรายการ' });
+      const { rows: [row] } = await pool.query(
+        `UPDATE ${table}
+         SET verified = $2,
+             verified_by = CASE WHEN $2 THEN $3 ELSE NULL END,
+             verified_at = CASE WHEN $2 THEN now() ELSE NULL END
+         WHERE id = $1
+         RETURNING *`,
+        [id, verified, req.access.display_name || req.username],
+      );
+      if (!row) return res.status(404).json({ error: 'ไม่พบรายการ' });
 
-    res.json(row);
-    broadcast('refresh', { table: 'canteen' });
-  });
+      res.json(row);
+      broadcast('refresh', { table });
+    });
+  }
 
   /* ---------- งานของผู้ตรวจ: งานที่ยังไม่เสร็จและอยู่ในแผน ---------- */
   // admin เห็นของผู้ตรวจทุกคน (+ งานที่ยังไม่มอบหมาย) ผู้ตรวจเห็นเฉพาะของตัวเอง

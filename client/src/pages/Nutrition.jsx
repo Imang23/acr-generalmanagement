@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import { Segmented } from 'antd';
 import dayjs from 'dayjs';
 import CrudPage from '../CrudPage.jsx';
 
@@ -11,15 +13,51 @@ const canteen = [
   { key: 'verified', label: 'การตรวจสอบ', type: 'verify', hideInForm: true },
 ];
 
-const profitOf = (list) => list.reduce((s, r) => s + (Number(r.revenue) - Number(r.cost)), 0);
+const coffee = [
+  { key: 'date', label: 'วันที่', type: 'date', required: true, today: true },
+  { key: 'kind', label: 'ประเภท', required: true, width: 100,
+    options: [['ขายเอง', 'ขายเอง'], ['ฝากขาย', 'สินค้าฝากขาย']] },
+  { key: 'item', label: 'สินค้า/เมนู', required: true, width: 160 },
+  { key: 'owner', label: 'เจ้าของสินค้าฝาก' },
+  { key: 'revenue', label: 'ยอดขาย (บาท)', type: 'number', required: true },
+  { key: 'cost', label: 'ต้นทุน/จ่ายเจ้าของ (บาท)', type: 'number', required: true },
+  { key: 'profit', label: 'กำไร', type: 'profit', hideInForm: true },
+  { key: 'note', label: 'หมายเหตุ', type: 'textarea' },
+  { key: 'verified', label: 'การตรวจสอบ', type: 'verify', hideInForm: true },
+];
 
-// บันทึกได้หลายรายการต่อวัน: แสดงยอดรวมของวันนี้ก่อน แล้วตามด้วยยอดรวมทั้งหมดที่แสดง
-const summary = (rows) => {
-  const today = rows.filter((r) => r.date === dayjs().format('YYYY-MM-DD'));
-  return `วันนี้ ${today.length} รายการ กำไร ${profitOf(today).toLocaleString()} บาท · กำไรรวมที่แสดง ${profitOf(rows).toLocaleString()} บาท`;
+const profitOf = (list) => list.reduce((s, r) => s + (Number(r.revenue) - Number(r.cost)), 0);
+const todayOf = (rows) => rows.filter((r) => r.date === dayjs().format('YYYY-MM-DD'));
+
+const canteenSummary = (rows) => {
+  const t = todayOf(rows);
+  return `วันนี้ ${t.length} รายการ กำไร ${profitOf(t).toLocaleString()} บาท · กำไรรวมที่แสดง ${profitOf(rows).toLocaleString()} บาท`;
 };
 
-// งานโภชนาการ: บัญชีรายรับ-รายจ่ายโรงอาหาร
+const coffeeSummary = (rows) => {
+  const t = todayOf(rows);
+  const own = rows.filter((r) => r.kind === 'ขายเอง');
+  const consign = rows.filter((r) => r.kind === 'ฝากขาย');
+  return `วันนี้ ${t.length} รายการ กำไร ${profitOf(t).toLocaleString()} บาท · ขายเอง ${profitOf(own).toLocaleString()} · ฝากขาย ${profitOf(consign).toLocaleString()} · รวม ${profitOf(rows).toLocaleString()} บาท`;
+};
+
 export default function Nutrition({ tick }) {
-  return <CrudPage resource="canteen" title="โรงอาหาร" fields={canteen} summary={summary} tick={tick} />;
+  const [tab, setTab] = useState('canteen');
+  return (
+    <div className="grid gap-3">
+      <Segmented
+        value={tab}
+        onChange={setTab}
+        options={[
+          { value: 'canteen', label: 'โรงอาหาร' },
+          { value: 'coffee', label: 'ร้านกาแฟ' },
+        ]}
+      />
+      {tab === 'canteen' ? (
+        <CrudPage key="canteen" resource="canteen" title="โรงอาหาร" fields={canteen} summary={canteenSummary} tick={tick} />
+      ) : (
+        <CrudPage key="coffee" resource="coffee" title="ร้านกาแฟ" fields={coffee} summary={coffeeSummary} tick={tick} />
+      )}
+    </div>
+  );
 }

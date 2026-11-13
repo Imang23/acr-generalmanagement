@@ -4,15 +4,15 @@
  *
  * โครงสร้างตามแผนผังงานธุรการเดิม:
  *  1) งานประจำเดือนตามกำหนดวัน  : ค่าน้ำค่าไฟ(20) · เงินกู้พนักงาน(5) · ปิดยอดเงินกู้(10) · เงินเดือน(25) · OT(25)
- *  2) สรุปบัญชีโรงอาหาร และร้านกาแฟ
+ *  2) สรุปบัญชีโรงอาหาร และร้านกาแฟ  (ดึงจากงานโภชนาการอัตโนมัติ: /api/canteen + /api/coffee)
  *  3) สรุปเงินรายเดือน
  *       - นำเอกสารที่อนุมัติมาส่งงานงบประมาณ
  *       - สรุปงวดเงินแผนก ส่งงบประมาณ (ภายในวันที่ 8)
  *  4) วาระการประชุม (ตามหัวหน้างานกำหนด): ประชุมฝ่าย · ประชุมพนักงาน
  *  5) ส่งไฟล์ถึง Admin : แนบไฟล์ + ข้อความ แล้วส่งให้ผู้ดูแลระบบ (ใหม่)
  *
- * การเก็บข้อมูล: ตอนนี้ใช้ localStorage (ฟังก์ชัน usePersistentState)
- * เมื่อมี API จริง ให้แทนที่ hook ตัวนั้นด้วยการเรียก service ได้เลย
+ * การเก็บข้อมูล: งานประจำเดือน/เอกสาร/งวดเงิน/ประชุม ใช้ localStorage (ฟังก์ชัน usePersistentState)
+ * ส่วนบัญชีโรงอาหาร/ร้านกาแฟ ดึงจากเซิร์ฟเวอร์ และรีโหลดอัตโนมัติผ่าน SSE (/api/events)
  *
  * การส่งไฟล์ถึง Admin:
  *  - ส่งด้วย POST multipart/form-data ไปที่ prop `adminEndpoint` (ค่าเริ่มต้น /api/admin/submissions)
@@ -21,7 +21,7 @@
  *  - ถ้าต้องใช้ token/axios ให้ส่ง prop `onSubmitToAdmin(formData)` เข้ามาแทน (คืน Promise)
  *  - ไฟล์เองไม่ถูกเก็บใน localStorage เก็บเฉพาะประวัติ (ชื่อไฟล์/ขนาด/สถานะ)
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert, Button, Card, Checkbox, Col, ConfigProvider, DatePicker, Empty, Form, Input, InputNumber,
   Modal, Popconfirm, Progress, Row, Segmented, Select, Space, Statistic, Table, Tabs, Tag,
@@ -177,6 +177,86 @@ function downloadCsv(filename, rows) {
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+// ดึงรายการโรงอาหาร + ร้านกาแฟจากเซิร์ฟเวอร์ และรีโหลดอัตโนมัติเมื่อมีการคีย์/แก้/ลบ
+const toDay = (v) => {
+  const s = String(v || '');
+  return s.length > 10 && s.includes('T') ? dayjs(s).format('YYYY-MM-DD') : s.slice(0, 10);
+};
+
+function useNutritionRows(getToken) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const load = useCallback(async () => {
+    const token = getToken();
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+    setLoading(true);
+    try {
+      const get = async (url) => {
+        const res = await fetch(url, { headers });
+        if (res.status === 403) throw new Error('คุณไม่มีสิทธิ์ดูข้อมูลโรงอาหาร/ร้านกาแฟ');
+        if (!res.ok) throw new Error(`โหลดข้อมูลไม่สำเร็จ (${res.status})`);
+        const j = await res.json();
+        return Array.isArray(j) ? j : [];
+      };
+      const [canteen, coffee] = await Promise.all([get('/api/canteen'), get('/api/coffee')]);
+      setRows([
+        ...canteen.map((r) => ({
+          id: `canteen-${r.id}`,
+          date: toDay(r.date),
+          shop: 'โรงอาหาร',
+          income: Number(r.revenue) || 0,
+          expense: Number(r.cost) || 0,
+          note: [r.shop, r.note].filter(Boolean).join(' · '),
+          verified: !!r.verified,
+        })),
+        ...coffee.map((r) => ({
+          id: `coffee-${r.id}`,
+          date: toDay(r.date),
+          shop: 'ร้านกาแฟ',
+          income: Number(r.revenue) || 0,
+          expense: Number(r.cost) || 0,
+          note: [r.kind, r.item, r.owner ? `เจ้าของ: ${r.owner}` : '', r.note].filter(Boolean).join(' · '),
+          verified: !!r.verified,
+        })),
+      ]);
+      setError('');
+    } catch (e) {
+      setError(e.message || 'โหลดข้อมูลไม่สำเร็จ');
+    } finally {
+      setLoading(false);
+    }
+  }, [getToken]);
+
+  useEffect(() => {
+    load();
+    const token = getToken();
+    if (!token || typeof EventSource === 'undefined') return undefined;
+
+    const es = new EventSource(`/api/events?token=${encodeURIComponent(token)}`);
+    let timer;
+    es.onmessage = (e) => {
+      try {
+        const { type, data } = JSON.parse(e.data);
+        const hit = type === 'canteen' || (type === 'refresh' && ['canteen', 'coffee'].includes(data?.table));
+        if (hit) {
+          clearTimeout(timer);
+          timer = setTimeout(load, 300);
+        }
+      } catch {
+        /* ข้ามข้อความที่ไม่ใช่ JSON */
+      }
+    };
+    return () => {
+      clearTimeout(timer);
+      es.close();
+    };
+  }, [load, getToken]);
+
+  return { rows, loading, error, reload: load };
 }
 
 /* ------------------------------------------------------------------ */
@@ -434,10 +514,10 @@ function DutiesTab({ rows, monthKeyStr, setDuty, onSendToAdmin }) {
 
 /* ------------------------------------------------------------------ */
 /* แท็บ: สรุปบัญชีโรงอาหาร และร้านกาแฟ                                     */
+/* ดึงจากงานโภชนาการ (อ่านอย่างเดียว) อัปเดตอัตโนมัติเมื่อมีการคีย์/แก้/ลบ       */
 /* ------------------------------------------------------------------ */
-function CanteenTab({ rows, monthKeyStr, defaultDate, upsert, remove, onSendToAdmin }) {
+function CanteenTab({ rows, loading, error, onReload, monthKeyStr, onSendToAdmin }) {
   const [shop, setShop] = useState('ทั้งหมด');
-  const modal = useModalState();
   const filtered = useMemo(
     () => rows.filter((r) => shop === 'ทั้งหมด' || r.shop === shop).sort((a, b) => a.date.localeCompare(b.date)),
     [rows, shop],
@@ -457,18 +537,34 @@ function CanteenTab({ rows, monthKeyStr, defaultDate, upsert, remove, onSendToAd
         return <Text type={net < 0 ? 'danger' : 'success'}>{money(net)}</Text>;
       },
     },
-    { title: 'หมายเหตุ', dataIndex: 'note', ellipsis: true },
-    { title: '', width: 100, align: 'right', render: (_, r) => <RowActions onEdit={() => modal.show(r)} onDelete={() => remove('canteen', r.id)} /> },
+    { title: 'รายละเอียด', dataIndex: 'note', ellipsis: true },
+    {
+      title: 'ตรวจสอบ',
+      dataIndex: 'verified',
+      width: 120,
+      render: (v) => (v ? <Tag color="green">ตรวจสอบแล้ว</Tag> : <Tag color="warning">รอตรวจสอบ</Tag>),
+    },
   ];
 
   const exportCsv = () =>
     downloadCsv(`สรุปบัญชีร้านค้า-${monthKeyStr}.csv`, [
-      ['วันที่', 'ร้าน', 'รายรับ', 'รายจ่าย', 'สุทธิ', 'หมายเหตุ'],
+      ['วันที่', 'ร้าน', 'รายรับ', 'รายจ่าย', 'สุทธิ', 'รายละเอียด'],
       ...filtered.map((r) => [r.date, r.shop, r.income, r.expense, (r.income || 0) - (r.expense || 0), r.note]),
     ]);
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      {error ? (
+        <Alert type="error" showIcon message={error} action={<Button size="small" onClick={onReload}>ลองใหม่</Button>} />
+      ) : (
+        <Alert
+          type="info"
+          showIcon
+          message="ข้อมูลดึงจากงานโภชนาการอัตโนมัติ"
+          description="เมื่อมีการคีย์ แก้ไข หรือลบรายการในหน้าโรงอาหาร/ร้านกาแฟ รายการจะอัปเดตที่นี่ทันที หากต้องการแก้ไขให้ไปแก้ที่หน้างานโภชนาการ"
+        />
+      )}
+
       <Row gutter={[16, 16]}>
         {SHOPS.map((s) => {
           const t = sumShop(rows, s);
@@ -494,17 +590,25 @@ function CanteenTab({ rows, monthKeyStr, defaultDate, upsert, remove, onSendToAd
         extra={
           <Space wrap>
             <Segmented options={['ทั้งหมด', ...SHOPS]} value={shop} onChange={setShop} />
+            <Button icon={<UndoOutlined />} onClick={onReload} loading={loading}>รีเฟรช</Button>
             <Button icon={<DownloadOutlined />} onClick={exportCsv} disabled={!filtered.length}>ส่งออก CSV</Button>
-            <SubmissionButton onSendToAdmin={onSendToAdmin} monthKeyStr={monthKeyStr} subject={`สรุปบัญชี${shop === 'ทั้งหมด' ? 'โรงอาหารและร้านกาแฟ' : shop} ประจำเดือน ${monthKeyStr}`} category={shop === 'ทั้งหมด' ? 'บัญชีโรงอาหาร/ร้านกาแฟ' : `บัญชี${shop}`} buttonText="ส่งงาน + แนบไฟล์" details={`รายการ ${filtered.length} รายการ\nรายรับรวม ${money(total.income)} บาท\nรายจ่ายรวม ${money(total.expense)} บาท\nยอดสุทธิ ${money(total.income - total.expense)} บาท`} />
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => modal.show()}>เพิ่มรายการ</Button>
+            <SubmissionButton
+              onSendToAdmin={onSendToAdmin}
+              monthKeyStr={monthKeyStr}
+              subject={`สรุปบัญชี${shop === 'ทั้งหมด' ? 'โรงอาหารและร้านกาแฟ' : shop} ประจำเดือน ${monthKeyStr}`}
+              category={shop === 'ทั้งหมด' ? 'บัญชีโรงอาหาร/ร้านกาแฟ' : `บัญชี${shop}`}
+              buttonText="ส่งงาน + แนบไฟล์"
+              details={`รายการ ${filtered.length} รายการ\nรายรับรวม ${money(total.income)} บาท\nรายจ่ายรวม ${money(total.expense)} บาท\nยอดสุทธิ ${money(total.income - total.expense)} บาท`}
+            />
           </Space>
         }
       >
         <Table
           rowKey="id"
+          loading={loading}
           columns={columns}
           dataSource={filtered}
-          scroll={{ x: 760 }}
+          scroll={{ x: 860 }}
           pagination={{ pageSize: 10, hideOnSinglePage: true }}
           locale={{ emptyText: <Empty description="ยังไม่มีรายการในเดือนนี้" /> }}
           summary={() =>
@@ -520,28 +624,6 @@ function CanteenTab({ rows, monthKeyStr, defaultDate, upsert, remove, onSendToAd
           }
         />
       </Card>
-
-      <RecordModal
-        open={modal.open}
-        record={modal.record}
-        title={modal.record ? 'แก้ไขรายการบัญชี' : 'เพิ่มรายการบัญชี'}
-        onClose={modal.close}
-        onSubmit={(r) => upsert('canteen', r)}
-        toForm={(r) => ({ shop: 'โรงอาหาร', income: 0, expense: 0, ...r, date: dayjs(r?.date || defaultDate) })}
-        fromForm={(v) => ({ ...v, date: v.date.format('YYYY-MM-DD') })}
-      >
-        <Form.Item name="date" label="วันที่" rules={[{ required: true, message: 'เลือกวันที่' }]}>
-          <DatePicker style={{ width: '100%' }} />
-        </Form.Item>
-        <Form.Item name="shop" label="ร้าน" rules={[{ required: true }]}>
-          <Select options={SHOPS.map((s) => ({ value: s, label: s }))} />
-        </Form.Item>
-        <Row gutter={12}>
-          <Col span={12}><Form.Item name="income" label="รายรับ">{moneyInput}</Form.Item></Col>
-          <Col span={12}><Form.Item name="expense" label="รายจ่าย">{moneyInput}</Form.Item></Col>
-        </Row>
-        <Form.Item name="note" label="หมายเหตุ"><Input.TextArea rows={2} /></Form.Item>
-      </RecordModal>
     </Space>
   );
 }
@@ -1043,6 +1125,7 @@ export default function Administration({
   currentUser = '', // ชื่อผู้ส่ง แนบไปกับคำขอ
 }) {
   const [data, setData] = usePersistentState(STORAGE_KEY, EMPTY_DATA);
+  const nutrition = useNutritionRows(getToken);
   const [month, setMonth] = useState(dayjs().startOf('month'));
   const [msg, msgCtx] = message.useMessage();
   const mk = monthKey(month);
@@ -1106,7 +1189,7 @@ export default function Administration({
 
   /* ---- ข้อมูลของเดือนที่เลือก ---- */
   const inMonth = (iso) => !!iso && iso.startsWith(mk);
-  const canteenM = data.canteen.filter((r) => inMonth(r.date));
+  const canteenM = nutrition.rows.filter((r) => inMonth(r.date));
   const docsM = data.docs.filter((r) => r.month === mk);
   const deptM = data.deptPeriods.filter((r) => r.month === mk);
   const meetingsM = data.meetings.filter((r) => inMonth(r.date));
@@ -1188,16 +1271,11 @@ export default function Administration({
     .map(({ at, ...rest }) => rest);
 
   /* ---- ข้อมูลตัวอย่าง (ใช้ตอนยังว่างเท่านั้น) ---- */
-  const isEmpty = !data.canteen.length && !data.docs.length && !data.deptPeriods.length && !data.meetings.length;
+  const isEmpty = !data.docs.length && !data.deptPeriods.length && !data.meetings.length;
   const seed = () => {
     const d = (n) => `${mk}-${String(n).padStart(2, '0')}`;
     setData((p) => ({
       ...p,
-      canteen: [
-        { id: uid(), date: d(2), shop: 'โรงอาหาร', income: 18500, expense: 12300, note: 'ตัวอย่าง' },
-        { id: uid(), date: d(2), shop: 'ร้านกาแฟ', income: 6200, expense: 3100, note: 'ตัวอย่าง' },
-        { id: uid(), date: d(3), shop: 'โรงอาหาร', income: 17900, expense: 11800, note: 'ตัวอย่าง' },
-      ],
       docs: [
         { id: uid(), month: mk, name: 'ใบขออนุมัติจัดซื้อวัสดุสำนักงาน', dept: 'ธุรการ', refNo: 'อก.001/69', amount: 4500, sent: false },
       ],
@@ -1230,7 +1308,16 @@ export default function Administration({
     {
       key: 'canteen',
       label: <span><CoffeeOutlined /> บัญชีโรงอาหาร/ร้านกาแฟ</span>,
-      children: <CanteenTab rows={canteenM} monthKeyStr={mk} defaultDate={defaultDate} upsert={upsert} remove={remove} onSendToAdmin={sendToAdmin} />,
+      children: (
+        <CanteenTab
+          rows={canteenM}
+          loading={nutrition.loading}
+          error={nutrition.error}
+          onReload={nutrition.reload}
+          monthKeyStr={mk}
+          onSendToAdmin={sendToAdmin}
+        />
+      ),
     },
     {
       key: 'finance',

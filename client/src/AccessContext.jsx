@@ -15,6 +15,7 @@ export const RESOURCE_MODULE = {
   employees: 'general',
   housekeeping_tasks: 'housekeeping',
   gardening_tasks: 'gardening',
+  coffee:'coffee',
 };
 
 // key ของเมนูหน้าเว็บ -> เมนูสิทธิ์ (หลายค่า = เข้าได้ถ้ามีอย่างน้อยหนึ่งอย่าง)
