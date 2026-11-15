@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { Segmented } from 'antd';
+import { Alert, Segmented } from 'antd';
 import dayjs from 'dayjs';
 import CrudPage from '../CrudPage.jsx';
+import { useAccess } from '../AccessContext.jsx';
 
 const canteen = [
   { key: 'date', label: 'วันที่', type: 'date', required: true, today: true },
@@ -41,18 +42,26 @@ const coffeeSummary = (rows) => {
   return `วันนี้ ${t.length} รายการ กำไร ${profitOf(t).toLocaleString()} บาท · ขายเอง ${profitOf(own).toLocaleString()} · ฝากขาย ${profitOf(consign).toLocaleString()} · รวม ${profitOf(rows).toLocaleString()} บาท`;
 };
 
+// งานโภชนาการ: แสดงแท็บเฉพาะร้านที่ผู้ใช้มีสิทธิ์อ่าน
 export default function Nutrition({ tick }) {
-  const [tab, setTab] = useState('canteen');
+  const { can } = useAccess();
+  const [picked, setPicked] = useState('canteen');
+
+  const tabs = [
+    can('canteen', 'read') && { value: 'canteen', label: 'โรงอาหาร' },
+    can('coffee', 'read') && { value: 'coffee', label: 'ร้านกาแฟ' },
+  ].filter(Boolean);
+
+  if (!tabs.length) {
+    return <Alert type="warning" showIcon message="คุณไม่มีสิทธิ์เข้าถึงงานโภชนาการ" />;
+  }
+
+  // ถ้าแท็บที่เลือกไว้ไม่มีสิทธิ์ ให้ใช้แท็บแรกที่เข้าได้
+  const tab = tabs.some((t) => t.value === picked) ? picked : tabs[0].value;
+
   return (
     <div className="grid gap-3">
-      <Segmented
-        value={tab}
-        onChange={setTab}
-        options={[
-          { value: 'canteen', label: 'โรงอาหาร' },
-          { value: 'coffee', label: 'ร้านกาแฟ' },
-        ]}
-      />
+      {tabs.length > 1 && <Segmented value={tab} onChange={setPicked} options={tabs} />}
       {tab === 'canteen' ? (
         <CrudPage key="canteen" resource="canteen" title="โรงอาหาร" fields={canteen} summary={canteenSummary} tick={tick} />
       ) : (

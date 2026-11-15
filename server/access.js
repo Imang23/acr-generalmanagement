@@ -9,6 +9,7 @@ import crypto from 'crypto';
 export const MODULES = [
   { value: 'repairs', label: 'งานซ่อม' },
   { value: 'canteen', label: 'โรงอาหาร' },
+  { value: 'coffee', label: 'ร้านกาแฟ' },
   { value: 'vehicles', label: 'ยานพาหนะ' },
   { value: 'workers', label: 'คนงาน' },
   { value: 'nurse', label: 'สุขอนามัยและพยาบาล' },
@@ -26,11 +27,14 @@ const ROLES = ['admin', 'inspector', 'technician', 'staff'];
 const SEG_MODULE = {
   repairs: 'repairs',
   canteen: 'canteen',
-  coffee: 'canteen',
+  coffee: 'coffee',
   vehicles: 'vehicles',
   workers: 'workers',
   nurse_visits: 'nurse',
   health_checks: 'nurse',
+  medicines: 'nurse',
+  medicine_logs: 'nurse',
+  'health-dashboard': 'nurse',
   buildings: 'buildings',
   store_items: 'store',
   committees: 'general',
@@ -51,11 +55,12 @@ const READ_VIA = {
 const DELETE_TABLES = {
   repairs: { module: 'repairs', label: 'title' },
   canteen: { module: 'canteen', label: 'date' },
-  coffee: { module: 'canteen', label: 'item' },
+  coffee: { module: 'coffee', label: 'item' },
   vehicles: { module: 'vehicles', label: 'plate' },
   workers: { module: 'workers', label: 'name' },
   nurse_visits: { module: 'nurse', label: 'student' },
   health_checks: { module: 'nurse', label: 'student' },
+  medicines: { module: 'nurse', label: 'name' },
   buildings: { module: 'buildings', label: 'name' },
   store_items: { module: 'store', label: 'name' },
   committees: { module: 'general', label: 'full_name' },
@@ -377,11 +382,11 @@ export function registerAccess(app, { pool, broadcast, hashPassword, adminUser, 
     });
   });
 
-  // ตรวจสอบรายการโรงอาหาร (ผู้ตรวจ/admin) verified=false = ยกเลิกการตรวจสอบ
-    // ตรวจสอบรายการโรงอาหาร/ร้านกาแฟ (ผู้ตรวจ/admin) verified=false = ยกเลิกการตรวจสอบ
+  // ตรวจสอบรายการโรงอาหาร/ร้านกาแฟ (ผู้ตรวจ/admin) verified=false = ยกเลิกการตรวจสอบ
+  // ใช้สิทธิ์ของตารางนั้นเอง: canteen -> เมนูโรงอาหาร, coffee -> เมนูร้านกาแฟ
   for (const table of ['canteen', 'coffee']) {
     app.post(`/api/${table}/:id/verify`, needUser, async (req, res) => {
-      if (!can(req.access, 'canteen', 'approve')) {
+      if (!can(req.access, table, 'approve')) {
         return res.status(403).json({ error: 'เฉพาะผู้ตรวจงานหรือผู้ดูแลระบบเท่านั้นที่ตรวจสอบรายการได้' });
       }
       const id = Number(req.params.id);
@@ -560,17 +565,30 @@ export function registerAccess(app, { pool, broadcast, hashPassword, adminUser, 
       }
     }
 
-    /* โรงอาหารที่รอตรวจสอบ (ไม่แยกตามผู้ตรวจ) */
+    /* โรงอาหาร/ร้านกาแฟที่รอตรวจสอบ (ไม่แยกตามผู้ตรวจ) นับตามสิทธิ์ของแต่ละเมนู */
     let canteen = null;
-    if (acc.isAdmin || acc.perms.includes('canteen')) {
-      const { rows: [c] } = await pool.query(
-        'SELECT count(*)::int AS n FROM canteen WHERE NOT verified',
-      );
-      const { rows: items } = await pool.query(
-        `SELECT id, to_char(date, 'YYYY-MM-DD') AS date, revenue, cost, shop, note, reporter
-         FROM canteen WHERE NOT verified ORDER BY date DESC, id DESC LIMIT 10`,
-      );
-      canteen = { unverified: c.n, items };
+    const seeCanteen = acc.isAdmin || acc.perms.includes('canteen');
+    const seeCoffee = acc.isAdmin || acc.perms.includes('coffee');
+    if (seeCanteen || seeCoffee) {
+      let unverified = 0;
+      let items = [];
+      if (seeCanteen) {
+        const { rows: [c] } = await pool.query(
+          'SELECT count(*)::int AS n FROM canteen WHERE NOT verified',
+        );
+        unverified += c.n;
+        items = (await pool.query(
+          `SELECT id, to_char(date, 'YYYY-MM-DD') AS date, revenue, cost, shop, note, reporter
+           FROM canteen WHERE NOT verified ORDER BY date DESC, id DESC LIMIT 10`,
+        )).rows;
+      }
+      if (seeCoffee) {
+        const { rows: [k] } = await pool.query(
+          'SELECT count(*)::int AS n FROM coffee WHERE NOT verified',
+        );
+        unverified += k.n;
+      }
+      canteen = { unverified, items };
     }
 
     /* ยอดรวม */

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, Badge, Card, Col, List, Progress, Row, Space, Tag, Typography } from 'antd';
 import {
-  CarOutlined, CheckCircleOutlined, ClockCircleOutlined, MedicineBoxOutlined, ShopOutlined,
+  CarOutlined, CheckCircleOutlined, ClockCircleOutlined, CoffeeOutlined, MedicineBoxOutlined, ShopOutlined,
   TeamOutlined, ToolOutlined, WarningOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
@@ -28,6 +28,48 @@ const VISIT = [
   ['treated', 'รักษาเบื้องต้น', '#3b6fd8'], ['rest', 'พักห้องพยาบาล', ORANGE],
   ['referred', 'ส่งต่อโรงพยาบาล', RED], ['home', 'กลับบ้าน', '#9aa7c2'],
 ];
+
+const COFFEE_BROWN = '#8b5a2b';
+const COFFEE_KIND = [['ขายเอง', 'ขายเอง', BLUE], ['ฝากขาย', 'สินค้าฝากขาย', ORANGE]];
+
+// วันที่จากเซิร์ฟเวอร์อาจเป็น ISO (มี T) หรือ YYYY-MM-DD
+const toDay = (v) => {
+  const s = String(v || '');
+  return s.length > 10 && s.includes('T') ? dayjs(s).format('YYYY-MM-DD') : s.slice(0, 10);
+};
+
+// สรุปข้อมูลร้านกาแฟจากรายการ /coffee (คำนวณฝั่งหน้าเว็บ)
+function summarizeCoffee(rows) {
+  const thisMonth = dayjs().format('YYYY-MM');
+  const profit = (r) => (Number(r.revenue) || 0) - (Number(r.cost) || 0);
+
+  const monthRows = rows.filter((r) => toDay(r.date).startsWith(thisMonth));
+
+  const revenueByKind = {};
+  monthRows.forEach((r) => {
+    revenueByKind[r.kind] = (revenueByKind[r.kind] || 0) + (Number(r.revenue) || 0);
+  });
+
+  const monthly = Array.from({ length: 6 }, (_, i) => {
+    const m = dayjs().subtract(5 - i, 'month').format('YYYY-MM');
+    const list = rows.filter((r) => toDay(r.date).startsWith(m));
+    return {
+      month: m,
+      revenue: list.reduce((s, r) => s + (Number(r.revenue) || 0), 0),
+      cost: list.reduce((s, r) => s + (Number(r.cost) || 0), 0),
+    };
+  });
+
+  return {
+    profitMonth: monthRows.reduce((s, r) => s + profit(r), 0),
+    profitOwn: monthRows.filter((r) => r.kind === 'ขายเอง').reduce((s, r) => s + profit(r), 0),
+    profitConsign: monthRows.filter((r) => r.kind === 'ฝากขาย').reduce((s, r) => s + profit(r), 0),
+    revenueMonth: monthRows.reduce((s, r) => s + (Number(r.revenue) || 0), 0),
+    countMonth: monthRows.length,
+    revenueByKind,
+    monthly,
+  };
+}
 
 const slices = (defs, map = {}) => defs.map(([key, label, color]) => ({ label, color, value: map[key] || 0 }));
 const num = (v) => Number(v ?? 0).toLocaleString('th-TH');
@@ -179,7 +221,8 @@ const LINE_COMMANDS = [
 ];
 
 /* ---------- ส่วนแสดงผล (รับข้อมูลเข้ามา) ---------- */
-export function DashboardView({ s, k, repairs, now, onNavigate, tick, showInspectorWork }) {
+export function DashboardView({ s, k, repairs, coffee, now, onNavigate, tick, showInspectorWork }) {
+  const cf = useMemo(() => (Array.isArray(coffee) ? summarizeCoffee(coffee) : null), [coffee]);
   const overdue = useMemo(
     () => repairs
       .filter((r) => r.status !== 'done' && r.due_date && dayjs(r.due_date).isBefore(now))
@@ -191,11 +234,19 @@ export function DashboardView({ s, k, repairs, now, onNavigate, tick, showInspec
   const stats = [
     [<ToolOutlined />, RED, 'งานซ่อมใหม่รอรับเรื่อง', num(s.repairs_new)],
     [<ToolOutlined />, ORANGE, 'งานซ่อมกำลังดำเนินการ', num(s.repairs_doing)],
-    [<ShopOutlined />, BLUE, 'กำไรโรงอาหารเดือนนี้', num(s.profit_month), 'บาท'],
     [<CarOutlined />, NAVY, 'รถที่ว่าง', `${s.vehicles_free}/${s.vehicles_total}`, 'คัน'],
     [<MedicineBoxOutlined />, GREEN, 'เข้าห้องพยาบาลวันนี้', num(s.nurse_today), 'ราย'],
     [<TeamOutlined />, '#3b6fd8', 'คนงานที่ทำงานอยู่', num(s.workers_active), 'คน'],
+    
+    [<ShopOutlined />, BLUE, 'กำไรโรงอาหารเดือนนี้', num(s.profit_month), 'บาท'],
+    ...(cf ? [
+      [<CoffeeOutlined />, COFFEE_BROWN, 'กำไรร้านกาแฟ ขายเอง (เดือนนี้)', num(cf.profitOwn), 'บาท'],
+      [<CoffeeOutlined />, COFFEE_BROWN, 'กำไร้านกาแฟ สินค้าฝากขาย (เดือนนี้)', num(cf.profitConsign), 'บาท'],
+    ] : []),
   ];
+  // 8 การ์ด → 4 ต่อแถว (2 แถวเท่ากัน) ; 6 การ์ด → 3 ต่อแถวจอกลาง / 6 ต่อแถวจอใหญ่
+  const statMd = stats.length > 6 ? 6 : 8;
+  const statXl = stats.length > 6 ? 6 : 4;
 
   return (
     <div className="grid gap-4">
@@ -206,7 +257,7 @@ export function DashboardView({ s, k, repairs, now, onNavigate, tick, showInspec
 
       <Row gutter={[12, 12]}>
         {stats.map(([icon, color, title, value, suffix]) => (
-          <Col key={title} xs={12} md={8} xl={4}>
+          <Col key={`${title}`} xs={12} md={statMd} xl={statXl}>
             <StatCard icon={icon} color={color} title={title} value={value} suffix={suffix} />
           </Col>
         ))}
@@ -306,6 +357,23 @@ export function DashboardView({ s, k, repairs, now, onNavigate, tick, showInspec
                 />
               </Panel>
             </Col>
+            {cf && (
+              <Col xs={24} lg={12}>
+                <Panel
+                  title="รายรับ-รายจ่ายร้านกาแฟ รายเดือน (6 เดือน)"
+                  extra={<Typography.Text type="secondary" style={{ fontSize: 12 }}>กำไรเดือนนี้ {num(cf.profitMonth)} บาท</Typography.Text>}
+                >
+                  <BarChart
+                    data={cf.monthly.map((m) => ({ ...m, label: dayjs(`${m.month}-01`).format('MMM') }))}
+                    series={[
+                      { key: 'revenue', label: 'ยอดขาย', color: COFFEE_BROWN },
+                      { key: 'cost', label: 'ต้นทุน/จ่ายเจ้าของ', color: ORANGE },
+                    ]}
+                    unit=" บาท"
+                  />
+                </Panel>
+              </Col>
+            )}
             <Col xs={24} lg={12}>
               <Panel title="จำนวนเข้าห้องพยาบาล 14 วันล่าสุด">
                 <BarChart
@@ -326,6 +394,16 @@ export function DashboardView({ s, k, repairs, now, onNavigate, tick, showInspec
                 <Donut data={slices(VEHICLE, k.vehicles_by_status)} centerLabel="คัน" />
               </Panel>
             </Col>
+            {cf && (
+              <Col xs={24} lg={12}>
+                <Panel
+                  title="ยอดขายร้านกาแฟเดือนนี้ แยกประเภท"
+                  extra={<Typography.Text type="secondary" style={{ fontSize: 12 }}>{num(cf.countMonth)} รายการ</Typography.Text>}
+                >
+                  <Donut data={slices(COFFEE_KIND, cf.revenueByKind)} centerLabel="บาท" />
+                </Panel>
+              </Col>
+            )}
           </Row>
         </>
       )}
@@ -352,14 +430,21 @@ export default function Dashboard({ tick, onNavigate }) {
   const [s, setS] = useState(null);
   const [k, setK] = useState(null); // null = กำลังโหลด, false = โหลดไม่สำเร็จ
   const [repairs, setRepairs] = useState([]);
+  const [coffee, setCoffee] = useState(null); // null = ยังไม่มีข้อมูล/ไม่มีสิทธิ์
   const [now, setNow] = useState(dayjs());
-  const { access } = useAccess();
+  const { access, can } = useAccess();
+  const canCoffee = can('coffee', 'read');
 
   useEffect(() => {
     api('/stats').then(setS).catch(() => {});
     api('/repairs').then(setRepairs).catch(() => {});
     api('/kpi').then(setK).catch(() => setK(false));
-  }, [tick]);
+    if (canCoffee) {
+      api('/coffee').then((d) => setCoffee(Array.isArray(d) ? d : [])).catch(() => setCoffee(null));
+    } else {
+      setCoffee(null);
+    }
+  }, [tick, canCoffee]);
 
   // อัปเดต "เลยกำหนด" ทุก 1 นาทีโดยไม่ต้องรีเฟรชหน้า
   useEffect(() => {
@@ -374,6 +459,7 @@ export default function Dashboard({ tick, onNavigate }) {
       s={s}
       k={k}
       repairs={repairs}
+      coffee={coffee}
       now={now}
       onNavigate={onNavigate}
       tick={tick}

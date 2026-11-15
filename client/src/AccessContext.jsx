@@ -5,6 +5,7 @@ import { api } from './api.js';
 export const RESOURCE_MODULE = {
   repairs: 'repairs',
   canteen: 'canteen',
+  coffee: 'coffee',
   vehicles: 'vehicles',
   workers: 'workers',
   nurse_visits: 'nurse',
@@ -15,7 +16,6 @@ export const RESOURCE_MODULE = {
   employees: 'general',
   housekeeping_tasks: 'housekeeping',
   gardening_tasks: 'gardening',
-  coffee:'coffee',
 };
 
 // key ของเมนูหน้าเว็บ -> เมนูสิทธิ์ (หลายค่า = เข้าได้ถ้ามีอย่างน้อยหนึ่งอย่าง)
@@ -33,7 +33,8 @@ export const PAGE_MODULE = {
   Administration: ['administration', 'general'],
   'health-Infirmary': ['nurse'],
   'health-check': ['nurse'],
-  nutrition: ['canteen'],
+  // งานโภชนาการ: เข้าได้ถ้ามีสิทธิ์โรงอาหารหรือร้านกาแฟอย่างใดอย่างหนึ่ง
+  nutrition: ['canteen', 'coffee'],
 };
 
 export const ROLE_LABEL = {

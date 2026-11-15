@@ -17,6 +17,7 @@ import { registerDailyTasks } from './dailyTasks.js';
 import { registerAccess } from './access.js';
 import { registerPersonPhotos, personRow, PERSON_TABLES } from './personPhotos.js';
 import { registerAdminSubmissions } from './adminSubmissions.js';
+import { registerMedicine } from './medicine.js';
 
 
 const app = express();
@@ -757,8 +758,8 @@ async function processLineEvents(events) {
 
       if (checkMatch) {
         const { rows } = await pool.query(
-          `INSERT INTO health_checks (date, student, class_room, weight, height, note, reporter)
-           VALUES ((now() AT TIME ZONE 'Asia/Bangkok')::date, $1, $2, $3, $4, $5, $6)
+          `INSERT INTO health_checks (date, student, class_room, weight, height, note, reporter, check_status)
+           VALUES ((now() AT TIME ZONE 'Asia/Bangkok')::date, $1, $2, $3, $4, $5, $6, 'done')
            RETURNING *`,
           [
             checkMatch[1].trim(), checkMatch[2].trim(),
@@ -770,6 +771,58 @@ async function processLineEvents(events) {
         await lineReply(
           ev.replyToken,
           `✅ บันทึกตรวจสุขภาพ\n${rows[0].student} (${rows[0].class_room})\nน้ำหนัก ${checkMatch[3]} กก. ส่วนสูง ${checkMatch[4]} ซม.`,
+        );
+        continue;
+      }
+
+      // ================================================
+      // สถานะ/ผลตรวจสุขภาพ
+      //   #สถานะตรวจ 7 ตรวจแล้ว    -> ตรวจแล้ว | ยังไม่ตรวจ
+      //   #ผลตรวจ 7 ปกติ ไม่พบความผิดปกติ  -> บันทึกผลตรวจ (และตั้งเป็น "ตรวจแล้ว")
+      // ================================================
+      const checkStatusMatch = text.match(/^#สถานะตรวจ\s+#?(\d+)\s+(\S+)\s*$/);
+
+      if (checkStatusMatch) {
+        const status = HEALTH_CHECK_ALIASES[checkStatusMatch[2].toLowerCase()];
+        if (!status) {
+          await lineReply(ev.replyToken, 'สถานะที่ใช้ได้: ตรวจแล้ว / ยังไม่ตรวจ\nเช่น #สถานะตรวจ 7 ตรวจแล้ว');
+          continue;
+        }
+        const { rows } = await pool.query(
+          'UPDATE health_checks SET check_status = $2 WHERE id = $1 RETURNING *',
+          [Number(checkStatusMatch[1]), status],
+        );
+        if (!rows[0]) {
+          await lineReply(ev.replyToken, `ไม่พบรายการตรวจสุขภาพ #${checkStatusMatch[1]}`);
+          continue;
+        }
+        broadcast('health_check', rows[0]);
+        await lineReply(
+          ev.replyToken,
+          `✅ #${rows[0].id} ${rows[0].student}: ${HEALTH_CHECK_LABEL[status]}`,
+        );
+        continue;
+      }
+
+      const checkResultMatch = text.match(/^#ผลตรวจ\s+#?(\d+)\s+(.+)$/s);
+
+      if (checkResultMatch) {
+        const { rows } = await pool.query(
+          `UPDATE health_checks
+           SET check_result = $2, check_status = 'done'
+           WHERE id = $1
+           RETURNING *`,
+          [Number(checkResultMatch[1]), checkResultMatch[2].trim().slice(0, 1000)],
+        );
+        if (!rows[0]) {
+          await lineReply(ev.replyToken, `ไม่พบรายการตรวจสุขภาพ #${checkResultMatch[1]}`);
+          continue;
+        }
+        broadcast('health_check', rows[0]);
+        // ไม่ส่งเนื้อหาผลตรวจกลับในแชท (ข้อมูลสุขภาพส่วนบุคคล)
+        await lineReply(
+          ev.replyToken,
+          `✅ บันทึกผลตรวจ #${rows[0].id} ${rows[0].student} แล้ว (ตรวจแล้ว)`,
         );
         continue;
       }
@@ -789,6 +842,8 @@ async function processLineEvents(events) {
             '#พยาบาล ชื่อ @ชั้น อาการ',
             '#ผลดูแล เลขที่ รักษา|พัก|ส่งต่อ|กลับบ้าน',
             '#ตรวจสุขภาพ ชื่อ @ชั้น น้ำหนัก ส่วนสูง',
+            '#สถานะตรวจ เลขที่ ตรวจแล้ว|ยังไม่ตรวจ',
+            '#ผลตรวจ เลขที่ ผลตรวจ',
           ].join('\n'),
         );
       }
@@ -1161,7 +1216,11 @@ const resources = {
   ],
   workers: ['name', 'role', 'phone', 'active', 'license_no', 'license_expiry', 'emergency_contact', 'note'],
   nurse_visits: ['date', 'student', 'class_room', 'symptom', 'treatment', 'status', 'reporter'],
-  health_checks: ['date', 'student', 'class_room', 'weight', 'height', 'note', 'reporter'],
+  // check_status = pending (ยังไม่ตรวจ) | done (ตรวจแล้ว), check_result = ผลตรวจ
+  health_checks: [
+    'date', 'student', 'class_room', 'weight', 'height', 'note', 'reporter',
+    'check_status', 'check_result', 'detail',
+  ],
   buildings: ['code', 'name', 'location', 'description', 'status'],
   store_items: ['name', 'category', 'qty', 'unit', 'min_qty', 'location', 'note'],
 };
@@ -1182,6 +1241,14 @@ const allowedStatus = {
   // ต้องเป็นตัวพิมพ์ใหญ่ ตรงกับหน้าเว็บและ CHECK ใน schema.sql
   committees: ['ACTIVE', 'EXPIRED', 'INACTIVE'],
   employees: ['ACTIVE', 'INACTIVE', 'ON_LEAVE'],
+};
+
+// สถานะการตรวจสุขภาพ (คอลัมน์ check_status ของ health_checks)
+const HEALTH_CHECK_STATUS = ['pending', 'done'];
+const HEALTH_CHECK_LABEL = { pending: 'ยังไม่ตรวจ', done: 'ตรวจแล้ว' };
+const HEALTH_CHECK_ALIASES = {
+  pending: 'pending', 'ยังไม่ตรวจ': 'pending', 'รอตรวจ': 'pending', 'ยัง': 'pending',
+  done: 'done', 'ตรวจแล้ว': 'done', 'แล้ว': 'done', 'เสร็จ': 'done',
 };
 
 // รูปงานซ่อมเป็น <img src> ส่ง header ไม่ได้ -> แนบ token อายุสั้นที่ผูกกับรูปนั้นๆ เท่านั้น
@@ -1598,6 +1665,15 @@ registerAdminSubmissions(app, {
   getAccess: (u) => access.getAccess(u),
 });
 
+/* สโตร์ยาห้องพยาบาล + แดชบอร์ดสรุปงานอนามัย — ดู medicine.js */
+registerMedicine(app, {
+  pool,
+  auth,
+  broadcast,
+  getAccess: (u) => access.getAccess(u),
+  can: (acc, module, action) => access.can(acc, module, action),
+});
+
 // รายชื่อพนักงานส่วนกลางสำหรับ Dropdown ในแบบฟอร์มงานต่าง ๆ
 // ส่งเฉพาะข้อมูลจำเป็น ไม่เปิดเผยเบอร์โทร/อีเมล/หมายเหตุส่วนตัวให้ทุกแผนก
 app.get('/api/employee-options', auth, async (req, res) => {
@@ -1644,7 +1720,30 @@ app.get('/api/committee-options', auth, async (req, res) => {
     res.status(500).json({ error: 'ไม่สามารถโหลดรายชื่อคณะกรรมการได้' });
   }
 });
+// คอลัมน์ผลตรวจจากไฟล์ Excel "สรุปผลการตรวจสุขภาพนักเรียน" ที่เก็บใน health_checks.detail (JSONB)
+const HEALTH_DETAIL_KEYS = [
+  'code', 'sex', 'age', 'bp', 'pulse', 'resp', 'disease',
+  'nut_wa', 'nut_ha', 'nut_wh',
+  'skin', 'eyes', 'ears', 'neck', 'oral', 'lymph',
+  'heart_rhythm', 'heart_sound', 'liver', 'chest', 'spleen', 'bone', 'lice',
+  'doctor', 'eye_r', 'eye_l', 'vision', 'colorblind',
+];
+
+// รับเฉพาะคีย์ที่กำหนด ค่าเป็นข้อความ ไม่เกิน 1000 ตัวอักษร ไม่มีข้อมูล = null
+function cleanHealthDetail(d) {
+  if (!d || typeof d !== 'object' || Array.isArray(d)) return null;
+  const out = {};
+  for (const k of HEALTH_DETAIL_KEYS) {
+    const v = d[k];
+    if (v === undefined || v === null) continue;
+    const t = String(v).trim().slice(0, 1000);
+    if (t) out[k] = t;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 // นำเข้าผลตรวจสุขภาพหลายแถว (ข้ามรายการซ้ำ: วันที่ + ชื่อ + ชั้น เดียวกัน)
+// รายการซ้ำที่ยังไม่มี detail จะถูกเติม detail ให้ (นำเข้าไฟล์เดิมซ้ำเพื่อเติมรายละเอียดได้)
 app.post('/api/health_checks/import', auth, async (req, res) => {
   const input = Array.isArray(req.body?.rows) ? req.body.rows : [];
   if (!input.length) return res.status(400).json({ error: 'ไม่พบข้อมูลสำหรับนำเข้า' });
@@ -1665,29 +1764,62 @@ app.post('/api/health_checks/import', auth, async (req, res) => {
     if (!student || !date || weight === undefined || height === undefined) {
       return res.status(400).json({ error: `ข้อมูลแถวที่ ${i + 1} ไม่ถูกต้อง` });
     }
+    const check_result = String(r?.check_result || '').trim().slice(0, 1000) || null;
+    // รับ check_status จากไฟล์ได้ (pending/done หรือ ยังไม่ตรวจ/ตรวจแล้ว)
+    // ถ้าไม่ระบุ: มีน้ำหนัก/ส่วนสูง/ผลตรวจ = ตรวจแล้ว ไม่มี = ยังไม่ตรวจ
+    const rawStatus = String(r?.check_status ?? '').trim().toLowerCase();
+    let check_status;
+    if (rawStatus) {
+      check_status = HEALTH_CHECK_ALIASES[rawStatus];
+      if (!check_status) {
+        return res.status(400).json({ error: `สถานะการตรวจแถวที่ ${i + 1} ไม่ถูกต้อง` });
+      }
+    } else {
+      check_status = weight !== null || height !== null || check_result ? 'done' : 'pending';
+    }
     rows.push({
-      date, student, weight, height,
+      date, student, weight, height, check_status, check_result,
       class_room: String(r?.class_room || '').trim().slice(0, 50) || null,
       note: String(r?.note || '').trim().slice(0, 1000) || null,
+      detail: cleanHealthDetail(r?.detail),
     });
   }
 
   const client = await pool.connect();
   let inserted = 0;
+  let updated = 0;
   try {
     await client.query('BEGIN');
     for (const r of rows) {
+      const detailJson = r.detail ? JSON.stringify(r.detail) : null;
       const { rowCount } = await client.query(
-        `INSERT INTO health_checks (date, student, class_room, weight, height, note, reporter)
-         SELECT $1::date, $2::text, $3::text, $4::numeric, $5::numeric, $6::text, $7::text
+        `INSERT INTO health_checks
+           (date, student, class_room, weight, height, note, reporter, check_status, check_result, detail)
+         SELECT $1::date, $2::text, $3::text, $4::numeric, $5::numeric, $6::text, $7::text,
+                $8::text, $9::text, $10::jsonb
          WHERE NOT EXISTS (
            SELECT 1 FROM health_checks
            WHERE date = $1::date AND student = $2::text
              AND COALESCE(class_room, '') = COALESCE($3::text, '')
          )`,
-        [r.date, r.student, r.class_room, r.weight, r.height, r.note, req.username],
+        [
+          r.date, r.student, r.class_room, r.weight, r.height, r.note, req.username,
+          r.check_status, r.check_result, detailJson,
+        ],
       );
       inserted += rowCount;
+
+      // รายการซ้ำที่ยังไม่มี detail -> เติมรายละเอียดจากไฟล์
+      if (!rowCount && detailJson) {
+        const upd = await client.query(
+          `UPDATE health_checks SET detail = $4::jsonb
+           WHERE date = $1::date AND student = $2::text
+             AND COALESCE(class_room, '') = COALESCE($3::text, '')
+             AND detail IS NULL`,
+          [r.date, r.student, r.class_room, detailJson],
+        );
+        updated += upd.rowCount;
+      }
     }
     await client.query('COMMIT');
   } catch (err) {
@@ -1698,7 +1830,7 @@ app.post('/api/health_checks/import', auth, async (req, res) => {
   }
 
   broadcast('health_check', { imported: inserted });
-  res.json({ inserted, skipped: rows.length - inserted });
+  res.json({ inserted, updated, skipped: rows.length - inserted - updated });
 });
 for (const [table, cols] of Object.entries(resources)) {
   const pick = (body = {}) =>
@@ -1710,11 +1842,27 @@ for (const [table, cols] of Object.entries(resources)) {
       ]);
   const badStatus = (body = {}) =>
     Boolean(
-      allowedStatus[table] &&
-      body.status !== undefined &&
-      body.status !== '' &&
-      !allowedStatus[table].includes(body.status)
+      (
+        allowedStatus[table] &&
+        body.status !== undefined &&
+        body.status !== '' &&
+        !allowedStatus[table].includes(body.status)
+      ) || (
+        table === 'health_checks' &&
+        body.check_status !== undefined &&
+        body.check_status !== '' &&
+        !HEALTH_CHECK_STATUS.includes(body.check_status)
+      )
     );
+
+  // ตรวจสุขภาพ: ถ้าไม่ได้ส่ง check_status มา แต่กรอกน้ำหนัก/ส่วนสูง/ผลตรวจแล้ว ถือว่า "ตรวจแล้ว"
+  const withHealthDefaults = (body = {}) => {
+    if (table !== 'health_checks' || body.check_status !== undefined) return body;
+    const has = (v) => v !== undefined && v !== null && v !== '';
+    return has(body.weight) || has(body.height) || has(body.check_result)
+      ? { ...body, check_status: 'done' }
+      : body;
+  };
 
   // จำกัดสิทธิ์เพิ่ม/แก้ไข/ลบข้อมูลคณะกรรมการและพนักงานเฉพาะ Admin
   // สิทธิ์ตรวจที่ access.js แล้ว (ตามบทบาทและเมนูที่กำหนด)
@@ -1762,7 +1910,7 @@ for (const [table, cols] of Object.entries(resources)) {
     if (badStatus(req.body)) {
       return res.status(400).json({ error: 'ค่าสถานะไม่ถูกต้อง' });
     }
-    const fields = pick(req.body);
+    const fields = pick(withHealthDefaults(req.body));
 
     if (!fields.length) {
       return res.status(400).json({
@@ -1975,7 +2123,15 @@ app.get('/api/stats', auth, async (_req, res) => {
     WHERE date = (now() AT TIME ZONE 'Asia/Bangkok')::date
   `);
 
+  const health = await queryOne(`
+    SELECT
+      count(*) FILTER (WHERE check_status = 'pending')::int AS health_pending,
+      count(*) FILTER (WHERE check_status = 'done')::int AS health_done
+    FROM health_checks
+  `);
+
   res.json({
+    ...health,
     ...nurse,
     ...repairs,
     ...canteen,
